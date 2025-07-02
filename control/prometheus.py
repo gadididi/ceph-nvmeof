@@ -239,6 +239,17 @@ class NVMeOFCollector:
         self.hosts = self._get_host_map(self.subsystems)
         logger.debug("Done with _get_host_map()")
 
+    def _log_timings(self):
+        """Log timing for each method"""
+        t = self.method_timings
+        logger.info(f"_get_bdev_info(): {t.get('_get_bdev_info',0):.2f}s")
+        logger.info(f"_get_bdev_io_stats(): {t.get('_get_bdev_io_stats',0):.2f}s")
+        logger.info(f"_get_spdk_thread_stats(): {t.get('_get_spdk_thread_stats',0):.2f}s")
+        logger.info(f"_get_subsystems(): {t.get('_get_subsystems',0):.2f}s")
+        logger.info(f"_list_subsystems(): {t.get('_list_subsystems',0):.2f}s")
+        logger.info(f"_get_connection_map(): {t.get('_get_connection_map',0):.2f}s")
+        logger.info(f"_get_host_map(): {t.get('_get_host_map',0):.2f}s")
+
     @ttl
     def collect(self):
         """Generator function returning SPDK data in Prometheus exposition format
@@ -250,7 +261,7 @@ class NVMeOFCollector:
 
         logger.debug("Collecting stats from the SPDK")
         self._get_data()
-
+        self._log_timings()
         elapsed = sum(self.method_timings.values())
         if elapsed > self.interval:
             logger.error(f"Stats refresh time {elapsed:.3f} > interval time of "
