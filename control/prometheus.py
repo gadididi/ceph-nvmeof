@@ -11,6 +11,7 @@ import os
 import time
 import threading
 import inspect
+import types
 import spdk.rpc as rpc
 
 from .proto import gateway_pb2 as pb2
@@ -64,6 +65,44 @@ def timer(method):
     return call
 
 
+def connection_cache_with_timer(ttl_seconds=60):
+    def decorator(method):
+        @wraps(method)
+        def call(self, *args, **kwargs):
+            st = time.time()
+
+            with self.connection_map_cache_lock:
+                now = time.time()
+                cache_age = now - self.connection_map_cache_time
+
+                # Check if cache is still valid
+                if self.connection_map_cache is not None and cache_age < ttl_seconds:
+                    # Cache hit
+                    result = self.connection_map_cache
+                    logger.debug(
+                        f'Connection cache hit (age: {cache_age:.1f}s of{ttl_seconds}s TTL)')
+                else:
+                    # Cache miss - do the expensive work
+                    logger.debug(f'Connection cache miss (age: {cache_age:.1f}s), refreshing...')
+
+                    result = method(*args, **kwargs)
+
+                    # Update cache
+                    self.connection_map_cache = result
+                    self.connection_map_cache_time = now
+
+                    logger.debug(f'Connection cache refreshed (valid for {ttl_seconds}s)')
+
+            # Record timing
+            elapsed = time.time() - st
+            if hasattr(self, 'method_timings'):
+                self.method_timings[method.__name__] = elapsed
+
+            return result
+        return call
+    return decorator
+
+
 def start_httpd(**kwargs):
     """Start the prometheus http endpoint, catching any exception"""
     try:
@@ -79,6 +118,12 @@ def start_exporter(spdk_rpc_client, config, gateway_rpc, logger_to_use):
 
     global logger
     logger = logger_to_use
+    # Check for startup delay in config
+    startup_delay_in_seconds = config.getint_with_default("gateway", "prometheus_startup_delay", 0)
+    if startup_delay_in_seconds > 0:
+        logger.info(f"Delaying Prometheus exporter startup by {startup_delay_in_seconds} \
+seconds for OMAP initialization...")
+        time.sleep(startup_delay_in_seconds)
     port = config.getint_with_default("gateway", "prometheus_port", 10008)
     ssl = config.getboolean_with_default("gateway", "prometheus_exporter_ssl", True)
     mode = 'https' if ssl else 'http'
@@ -127,6 +172,15 @@ class NVMeOFCollector:
         self.hosts = {}
         self.listeners = {}
         self.method_timings = {}
+
+        # Cache for connection map
+        self.connection_map_cache = None           # Store cached connection data
+        self.connection_map_cache_lock = threading.Lock()
+        self.connection_map_cache_time = 0           # Last time the connection cache was refreshed
+        cache_ttl = self.gw_config.getint_with_default(
+            "gateway", "prometheus_connection_list_cache_expiration", 60)
+        decorated_method = connection_cache_with_timer(cache_ttl)(self._get_connection_map)
+        self._get_connection_map = types.MethodType(decorated_method, self)
 
         if self.bdev_pools:
             logger.info(f"Stats restricted to bdevs in the following pool(s): "
@@ -195,7 +249,6 @@ class NVMeOFCollector:
 
         return {subsys.nqn: subsys for subsys in resp.subsystems}
 
-    @timer
     def _get_connection_map(self, subsystem_list):
         """Fetch connection information for all defined subsystems"""
         connection_map = {}
@@ -242,13 +295,13 @@ class NVMeOFCollector:
     def _log_timings(self):
         """Log timing for each method"""
         t = self.method_timings
-        logger.debug(f"_get_bdev_info(): {t.get('_get_bdev_info',0):.2f}s")
-        logger.debug(f"_get_bdev_io_stats(): {t.get('_get_bdev_io_stats',0):.2f}s")
-        logger.debug(f"_get_spdk_thread_stats(): {t.get('_get_spdk_thread_stats',0):.2f}s")
-        logger.debug(f"_get_subsystems(): {t.get('_get_subsystems',0):.2f}s")
-        logger.debug(f"_list_subsystems(): {t.get('_list_subsystems',0):.2f}s")
-        logger.debug(f"_get_connection_map(): {t.get('_get_connection_map',0):.2f}s")
-        logger.debug(f"_get_host_map(): {t.get('_get_host_map',0):.2f}s")
+        logger.debug(f"_get_bdev_info(): {t.get('_get_bdev_info', 0):.2f}s")
+        logger.debug(f"_get_bdev_io_stats(): {t.get('_get_bdev_io_stats', 0):.2f}s")
+        logger.debug(f"_get_spdk_thread_stats(): {t.get('_get_spdk_thread_stats', 0):.2f}s")
+        logger.debug(f"_get_subsystems(): {t.get('_get_subsystems', 0):.2f}s")
+        logger.debug(f"_list_subsystems(): {t.get('_list_subsystems', 0):.2f}s")
+        logger.debug(f"_get_connection_map(): {t.get('_get_connection_map', 0):.2f}s")
+        logger.debug(f"_get_host_map(): {t.get('_get_host_map', 0):.2f}s")
 
     @ttl
     def collect(self):
