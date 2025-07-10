@@ -116,7 +116,7 @@ def start_exporter(spdk_rpc_client, config, gateway_rpc, logger_to_use):
     global logger
     logger = logger_to_use
     # Check for startup delay in config
-    startup_delay_in_seconds = config.getint_with_default("gateway", "prometheus_startup_delay", 60)
+    startup_delay_in_seconds = config.getint_with_default("gateway", "prometheus_startup_delay", 240)
     if startup_delay_in_seconds > 60:
         logger.info(f"Delaying Prometheus exporter startup by {startup_delay_in_seconds} \
 seconds for OMAP initialization...")
