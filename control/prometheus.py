@@ -70,28 +70,25 @@ def connection_cache_with_timer(ttl_seconds=60):
         @wraps(method)
         def call(self, *args, **kwargs):
             st = time.time()
+            cache_age = st - self.connection_map_cache_time
 
-            with self.connection_map_cache_lock:
-                now = time.time()
-                cache_age = now - self.connection_map_cache_time
+            # Check if cache is still valid
+            if self.connection_map_cache is not None and cache_age < ttl_seconds:
+                # Cache hit
+                result = self.connection_map_cache
+                logger.debug(
+                    f'Connection cache hit (age: {cache_age:.1f}s of{ttl_seconds}s TTL)')
+            else:
+                # Cache miss - do the expensive work
+                logger.debug(f'Connection cache miss (age: {cache_age:.1f}s), refreshing...')
 
-                # Check if cache is still valid
-                if self.connection_map_cache is not None and cache_age < ttl_seconds:
-                    # Cache hit
-                    result = self.connection_map_cache
-                    logger.debug(
-                        f'Connection cache hit (age: {cache_age:.1f}s of{ttl_seconds}s TTL)')
-                else:
-                    # Cache miss - do the expensive work
-                    logger.debug(f'Connection cache miss (age: {cache_age:.1f}s), refreshing...')
+                result = method(*args, **kwargs)
 
-                    result = method(*args, **kwargs)
+                # Update cache
+                self.connection_map_cache = result
+                self.connection_map_cache_time = st
 
-                    # Update cache
-                    self.connection_map_cache = result
-                    self.connection_map_cache_time = now
-
-                    logger.debug(f'Connection cache refreshed (valid for {ttl_seconds}s)')
+                logger.debug(f'Connection cache refreshed (valid for {ttl_seconds}s)')
 
             # Record timing
             elapsed = time.time() - st
@@ -119,8 +116,8 @@ def start_exporter(spdk_rpc_client, config, gateway_rpc, logger_to_use):
     global logger
     logger = logger_to_use
     # Check for startup delay in config
-    startup_delay_in_seconds = config.getint_with_default("gateway", "prometheus_startup_delay", 0)
-    if startup_delay_in_seconds > 0:
+    startup_delay_in_seconds = config.getint_with_default("gateway", "prometheus_startup_delay", 60)
+    if startup_delay_in_seconds > 60:
         logger.info(f"Delaying Prometheus exporter startup by {startup_delay_in_seconds} \
 seconds for OMAP initialization...")
         time.sleep(startup_delay_in_seconds)
@@ -175,7 +172,6 @@ class NVMeOFCollector:
 
         # Cache for connection map
         self.connection_map_cache = None           # Store cached connection data
-        self.connection_map_cache_lock = threading.Lock()
         self.connection_map_cache_time = 0           # Last time the connection cache was refreshed
         cache_ttl = self.gw_config.getint_with_default(
             "gateway", "prometheus_connection_list_cache_expiration", 60)
