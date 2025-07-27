@@ -282,13 +282,13 @@ class NVMeOFCollector:
     def _log_timings(self):
         """Log timing for each method"""
         t = self.method_timings
-        logger.debug(f"_get_bdev_info(): {t.get('_get_bdev_info', 0):.2f}s")
-        logger.debug(f"_get_bdev_io_stats(): {t.get('_get_bdev_io_stats', 0):.2f}s")
-        logger.debug(f"_get_spdk_thread_stats(): {t.get('_get_spdk_thread_stats', 0):.2f}s")
-        logger.debug(f"_get_subsystems(): {t.get('_get_subsystems', 0):.2f}s")
-        logger.debug(f"_list_subsystems(): {t.get('_list_subsystems', 0):.2f}s")
-        logger.debug(f"_get_connection_map(): {t.get('_get_connection_map', 0):.2f}s")
-        logger.debug(f"_get_host_map(): {t.get('_get_host_map', 0):.2f}s")
+        logger.info(f"_get_bdev_info(): {t.get('_get_bdev_info', 0):.2f}s")
+        logger.info(f"_get_bdev_io_stats(): {t.get('_get_bdev_io_stats', 0):.2f}s")
+        logger.info(f"_get_spdk_thread_stats(): {t.get('_get_spdk_thread_stats', 0):.2f}s")
+        logger.info(f"_get_subsystems(): {t.get('_get_subsystems', 0):.2f}s")
+        logger.info(f"_list_subsystems(): {t.get('_list_subsystems', 0):.2f}s")
+        logger.info(f"_get_connection_map(): {t.get('_get_connection_map', 0):.2f}s")
+        logger.info(f"_get_host_map(): {t.get('_get_host_map', 0):.2f}s")
 
     @ttl
     def collect(self):
