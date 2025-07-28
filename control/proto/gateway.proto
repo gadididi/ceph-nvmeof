@@ -595,6 +595,7 @@ message namespace_cli {
 	optional bool read_only = 18;
         optional string cluster_name = 19;
         optional uint32 configured_load_balancing_group = 20;
+	optional bool image_was_shrunk = 21;
 }
 
 message namespaces_info {

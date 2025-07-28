@@ -432,8 +432,9 @@ class SubsystemHostAuth:
 
 
 class NamespaceInfo:
-    def __init__(self, nsid, bdev, uuid, anagrpid, auto_visible, pool, image,
+    def __init__(self, subsys, nsid, bdev, uuid, anagrpid, auto_visible, pool, image,
                  trash_image, read_only):
+        self.subsys = subsys
         self.nsid = nsid
         self.bdev = bdev
         self.uuid = uuid
@@ -444,9 +445,11 @@ class NamespaceInfo:
         self.image = image
         self.trash_image = trash_image
         self.read_only = read_only
+        self.image_was_shrunk = False
 
     def __str__(self):
-        return f"nsid: {self.nsid}, bdev: {self.bdev}, uuid: {self.uuid}, " \
+        return f"subsys: {self.subsys}, nsid: {self.nsid}, " \
+               f"bdev: {self.bdev}, uuid: {self.uuid}, " \
                f"auto_visible: {self.auto_visible}, anagrpid: {self.anagrpid}, " \
                f"pool: {self.pool}, image: {self.image}, trash_image: {self.trash_image}, " \
                f"read_only: {self.read_only}, " \
@@ -485,6 +488,12 @@ class NamespaceInfo:
     def set_ana_group_id(self, anagrpid):
         self.anagrpid = anagrpid
 
+    def set_image_was_shrunk(self, was_shrunk: bool):
+        self.image_was_shrunk = was_shrunk
+
+    def was_image_shrunk(self):
+        return self.image_was_shrunk
+
     @staticmethod
     def are_uuids_equal(uuid1: str, uuid2: str) -> bool:
         assert uuid1 and uuid2, "UUID can't be empty"
@@ -497,7 +506,7 @@ class NamespaceInfo:
 
 
 class NamespacesLocalList:
-    EMPTY_NAMESPACE = NamespaceInfo(None, None, None, 0, False, None, None, False, False)
+    EMPTY_NAMESPACE = NamespaceInfo(None, None, None, None, 0, False, None, None, False, False)
 
     def __init__(self):
         self.namespace_list = defaultdict(dict)
@@ -516,24 +525,33 @@ class NamespacesLocalList:
                       pool, image, trash_image, read_only):
         if not bdev:
             bdev = GatewayService.find_unique_bdev_name(uuid)
-        self.namespace_list[nqn][nsid] = NamespaceInfo(nsid, bdev, uuid, anagrpid,
+        self.namespace_list[nqn][nsid] = NamespaceInfo(nqn, nsid, bdev, uuid, anagrpid,
                                                        auto_visible, pool, image, trash_image,
                                                        read_only)
 
-    def find_namespace(self, nqn, nsid, uuid=None) -> NamespaceInfo:
-        if nqn not in self.namespace_list:
+    def find_namespace(self, nqn, nsid, uuid=None, bdev=None) -> NamespaceInfo:
+        if nqn is not None and nqn not in self.namespace_list:
             return NamespacesLocalList.EMPTY_NAMESPACE
 
-        # if we have nsid, use it as the key
-        if nsid:
-            if nsid in self.namespace_list[nqn]:
-                return self.namespace_list[nqn][nsid]
-            return NamespacesLocalList.EMPTY_NAMESPACE
+        if nqn is None:
+            nqn_list = self.namespace_list
+        else:
+            nqn_list = [nqn]
 
-        if uuid:
-            for ns in self.namespace_list[nqn]:
-                if NamespaceInfo.are_uuids_equal(uuid, self.namespace_list[nqn][ns].uuid):
-                    return self.namespace_list[nqn][ns]
+        for one_nqn in nqn_list:
+            # if we have nsid, use it as the key
+            if nsid:
+                if nsid in self.namespace_list[one_nqn]:
+                    return self.namespace_list[one_nqn][nsid]
+            elif uuid:
+                for ns in self.namespace_list[one_nqn]:
+                    if NamespaceInfo.are_uuids_equal(uuid,
+                                                     self.namespace_list[one_nqn][ns].uuid):
+                        return self.namespace_list[one_nqn][ns]
+            elif bdev:
+                for ns in self.namespace_list[one_nqn]:
+                    if bdev == self.namespace_list[one_nqn][ns].bdev:
+                        return self.namespace_list[one_nqn][ns]
 
         return NamespacesLocalList.EMPTY_NAMESPACE
 
@@ -706,6 +724,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
     MAX_HOSTS_DEFAULT = 2048
     # notification name should be the same as in spdk/lib/nvmf/ctrlr.c
     SPDK_HOST_KEEPALIVE_TIMEOUT_NOTIFICATION = "host_keepalive_timeout"
+    # notification name should be the same as in spdk/lib/bdev/bdev.c
+    SPDK_RBD_IMAGE_SHRINK_NOTIFICATION = "bdev_shrink"
 
     def __init__(self, config: GatewayConfig, gateway_state: GatewayStateHandler,
                  rpc_lock, omap_lock: OmapLock, group_id: int, spdk_rpc_client,
@@ -861,6 +881,22 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                 f"{timeout} milliseconds")
                             self.host_info.set_host_keepalive_timeout_disconnection(subsysnqn,
                                                                                     hostnqn)
+                        elif n["type"] == GatewayService.SPDK_RBD_IMAGE_SHRINK_NOTIFICATION:
+                            n_ctx = n["ctx"]
+                            (bdev, size, new_size) = n_ctx.split(",")
+                            self.logger.debug(f"Bdev {bdev} size was shrunk from "
+                                              f"{size} to {new_size} bytes")
+                            if bdev:
+                                with self.rpc_lock:
+                                    ns = self.subsystem_nsid_bdev_and_uuid.find_namespace(None,
+                                                                                          None,
+                                                                                          None,
+                                                                                          bdev)
+                                    if not ns.empty():
+                                        ns.set_image_was_shrunk(True)
+                                        self.logger.warning(f"Namespace {ns.nsid} on {ns.subsys} "
+                                                            f"size was shrunk from "
+                                                            f"{size} to {new_size} bytes")
                     except Exception:
                         self.logger.exception(f"Invalid notification: {n}")
             time.sleep(read_interval)
@@ -3063,7 +3099,8 @@ class GatewayService(pb2_grpc.GatewayServicer):
                                                trash_image=find_ret.trash_image,
                                                read_only=find_ret.read_only,
                                                configured_load_balancing_group=lb_group_configured,
-                                               cluster_name=cluster_name)
+                                               cluster_name=cluster_name,
+                                               image_was_shrunk=find_ret.was_image_shrunk())
                     with self.rpc_lock:
                         ns_bdev = self.get_bdev_info(bdev_name)
                     if ns_bdev is None:
@@ -3456,6 +3493,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
 
         if ret.status == 0:
             errmsg = os.strerror(0)
+            find_ret.set_image_was_shrunk(False)
         else:
             errmsg = f"Failure resizing namespace {request.nsid} on " \
                      f"{request.subsystem_nqn}: {ret.error_message}"
