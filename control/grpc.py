@@ -5102,6 +5102,7 @@ class GatewayService(pb2_grpc.GatewayServicer):
                     json_req = json_format.MessageToJson(
                         request, preserving_proto_field_name=True,
                         including_default_value_fields=True)
+                    self.logger.info(f"create_listener json_req: {json_req}")
                     self.gateway_state.add_listener(request.nqn,
                                                     request.host_name,
                                                     "TCP", request.traddr,
